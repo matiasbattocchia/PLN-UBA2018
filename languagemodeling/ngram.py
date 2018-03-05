@@ -50,7 +50,7 @@ class NGram(LanguageModel):
         for i in range(len(_sent_) - self._n + 1):
             yield tuple(_sent_[i:i+n])
 
-    def __init__(self, n, sents):
+    def __init__(self, n, sents, lower=True):
         """
         n -- order of the model.
         sents -- list of sentences, each one being a list of tokens.
@@ -61,6 +61,9 @@ class NGram(LanguageModel):
         self.n1_counter = Counter()
 
         for sent in sents:
+            if lower:
+                sent = [word.lower() for word in sent]
+
             # contando n-gramas y (n-1)-gramas
             self.n0_counter.update(self.ngrams(n,   sent))
             self.n1_counter.update(self.ngrams(n-1, sent))
