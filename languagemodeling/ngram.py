@@ -97,7 +97,7 @@ class NGram(LanguageModel):
         if np.isnan(prob):
             return 0.0
         else:
-           return prob
+            return prob
 
     def sent_prob(self, sent):
         """Probability of a sentence. Warning: subject to underflow problems.
@@ -145,7 +145,15 @@ class AddOneNGram(NGram):
 
 class InterpolatedNGram(NGram):
 
-    def __init__(self, n, sents, gamma=None, addone=True):
+    @staticmethod
+    def ngrams(n, sent):
+        # marcadores de comienzo y fin de oración
+        _sent_ = ['<s>'] * n + sent + ['</s>']
+
+        for i in range(len(_sent_) - n + 1):
+            yield tuple(_sent_[i:i+n])
+
+    def __init__(self, n, sents, gamma=None, addone=True, lower=True):
         """
         n -- order of the model.
         sents -- list of sentences, each one being a list of tokens.
@@ -165,18 +173,22 @@ class InterpolatedNGram(NGram):
             train_sents = sents[:m]
             held_out_sents = sents[m:]
 
-        print('Computing counts...')
-        # WORK HERE!!
-        # COMPUTE COUNTS FOR ALL K-GRAMS WITH K <= N
+        self.counters = [Counter() for _ in range(n+1)]
+
+        for sent in train_sents:
+            if lower:
+                sent = [word.lower() for word in sent]
+
+            for i in range(n+1):
+                self.counters[i].update(self.ngrams(i, sent))
+
+        self.counters[0][tuple()] -= len(train_sents)
 
         # compute vocabulary size for add-one in the last step
         self._addone = addone
         if addone:
-            print('Computing vocabulary...')
-            self._voc = voc = set()
-            # WORK HERE!!
-
-            self._V = len(voc)
+            self._voc = set( [ngram[-1] for ngram in self.counters[-1].keys()] )
+            self._V = len(self._voc)  # vocabulary size
 
         # compute gamma if not given
         if gamma is not None:
@@ -198,41 +210,66 @@ class InterpolatedNGram(NGram):
             print('  Choose gamma = {}'.format(min_gamma))
             self._gamma = min_gamma
 
-    def count(self, tokens):
+    def count(self, ngram):
         """Count for an k-gram for k <= n.
 
         tokens -- the k-gram tuple.
         """
-        # WORK HERE!! (JUST A RETURN STATEMENT)
+        return self.counters[len(ngram)][ngram]
 
-    def cond_prob(self, token, prev_tokens=None):
+    def cond_prob_ngram(self, ngram):
+        """Conditional probability of a token.
+
+        tokens  -- tuple of tokens; i.e. (n-2, n-1, n)
+        returns -- p(n | n-1, n-2) = count(n-2, n-1, n) / count(n-2, n-1)
+        """
+        prob = np.divide( self.count(ngram), self.count(ngram[:-1]) )
+        print('COND=',ngram,'/',ngram[:-1],'=',self.count(ngram),
+                '/',self.count(ngram[:-1]),'=', prob)
+
+        return 0.0 if np.isnan(prob) else prob
+
+    def gamma_term(self, ngram, gamma=0.0):
+        prob = np.divide( self.count(ngram), self.count(ngram) + gamma)
+        print('GAMMA=',ngram,'/',ngram,'+',gamma,'=',self.count(ngram),
+                '/',self.count(ngram),'+',gamma,'=', prob)
+
+        return 0.0 if np.isnan(prob) else prob
+
+    def add_one_cond_prob_ngram(self, ngram):
+        """Conditional probability of a token.
+
+        tokens  -- tuple of tokens; i.e. (n-2, n-1, n)
+        returns -- p(n | n-1, n-2) = count(n-2, n-1, n) / count(n-2, n-1)
+        """
+        return np.divide( self.count(ngram) + 1, self.count(ngram[:-1]) + self._V )
+
+    def cond_prob(self, token, prev_tokens=tuple()):
         """Conditional probability of a token.
 
         token -- the token.
         prev_tokens -- the previous n-1 tokens (optional only if n = 1).
         """
         n = self._n
-        if not prev_tokens:
-            # if prev_tokens not given, assume 0-uple:
-            prev_tokens = ()
         assert len(prev_tokens) == n - 1
 
-        # WORK HERE!!
-        # SUGGESTED STRUCTURE:
-        tokens = prev_tokens + (token,)
-        prob = 0.0
-        cum_lambda = 0.0  # sum of previous lambdas
-        for i in range(n):
-            # i-th term of the sum
-            if i < n - 1:
-                # COMPUTE lambdaa AND cond_ml.
-                pass
-            else:
-                # COMPUTE lambdaa AND cond_ml.
-                # LAST TERM: USE ADD ONE IF NEEDED!
-                pass
+        tokens  = prev_tokens + (token,)
+        probs   = []
+        lambdas = []
 
-            prob += lambdaa * cond_ml
-            cum_lambda += lambdaa
+        for i in range(n-1):
+            probs.append( self.cond_prob_ngram(tokens[i:]) )
+            lambdas.append( (1 - np.sum(lambdas)) * self.gamma_term(tokens[i:-1], self._gamma) )
 
-        return prob
+        if self._addone:
+            probs.append( self.add_one_cond_prob_ngram(tokens[n-1:]) )
+        else:
+            probs.append( self.cond_prob_ngram(tokens[n-1:]) )
+
+        lambdas.append(1 - np.sum(lambdas))
+
+        print('p=',probs)
+        print('l=',lambdas)
+        print('cond=',np.dot(lambdas,probs))
+        print('----')
+        return np.dot(lambdas, probs)
