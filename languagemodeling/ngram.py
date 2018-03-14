@@ -43,11 +43,12 @@ import numpy as np
 
 class NGram(LanguageModel):
 
-    def ngrams(self, n, sent):
+    @staticmethod
+    def ngrams(n, sent):
         # marcadores de comienzo y fin de oración
-        _sent_ = ['<s>'] * (self._n - 1) + sent + ['</s>']
+        _sent_ = ['<s>'] * n + sent + ['</s>']
 
-        for i in range(len(_sent_) - self._n + 1):
+        for i in range(len(_sent_) - n + 1):
             yield tuple(_sent_[i:i+n])
 
     def __init__(self, n, sents, lower=True):
@@ -61,12 +62,12 @@ class NGram(LanguageModel):
         self.n1_counter = Counter()
 
         for sent in sents:
-            if lower:
-                sent = [word.lower() for word in sent]
-
             # contando n-gramas y (n-1)-gramas
             self.n0_counter.update(self.ngrams(n,   sent))
             self.n1_counter.update(self.ngrams(n-1, sent))
+
+        if n == 1:
+            self.n1_counter[tuple()] -= len(sents)
 
     def count(self, tokens):
         """Count for an n-gram or (n-1)-gram.
@@ -104,15 +105,16 @@ class NGram(LanguageModel):
 
         sent -- the sentence as a list of tokens.
         """
-        return np.prod( list(map( self.cond_prob_ngram, self.ngrams(self._n, sent) )) )
+        # el [1:] está para saltear el n-grama (<s>, <s>, <s>, ...)
+        return np.prod( list(map( self.cond_prob_ngram, self.ngrams(self._n, sent) ))[1:] )
 
     def sent_log_prob(self, sent):
         """Log-probability of a sentence.
 
         sent -- the sentence as a list of tokens.
         """
-        return np.sum( np.log2( list(map( self.cond_prob_ngram, self.ngrams(self._n, sent) )) ) )
-
+        # el [1:] está para saltear el n-grama (<s>, <s>, <s>, ...)
+        return np.sum( np.log2( list(map( self.cond_prob_ngram, self.ngrams(self._n, sent) ))[1:] ) )
 
 class AddOneNGram(NGram):
 
@@ -126,6 +128,7 @@ class AddOneNGram(NGram):
 
         # compute vocabulary
         self._voc = set( [ngram[-1] for ngram in self.n0_counter.keys()] )
+        self._voc.discard('<s>')
 
         self._V = len(self._voc)  # vocabulary size
 
@@ -145,15 +148,7 @@ class AddOneNGram(NGram):
 
 class InterpolatedNGram(NGram):
 
-    @staticmethod
-    def ngrams(n, sent):
-        # marcadores de comienzo y fin de oración
-        _sent_ = ['<s>'] * n + sent + ['</s>']
-
-        for i in range(len(_sent_) - n + 1):
-            yield tuple(_sent_[i:i+n])
-
-    def __init__(self, n, sents, gamma=None, addone=True, lower=True):
+    def __init__(self, n, sents, gamma=None, addone=True):
         """
         n -- order of the model.
         sents -- list of sentences, each one being a list of tokens.
@@ -164,7 +159,7 @@ class InterpolatedNGram(NGram):
         assert n > 0
         self._n = n
 
-        if gamma is not None:
+        if gamma:
             # everything is training data
             train_sents = sents
         else:
@@ -176,9 +171,6 @@ class InterpolatedNGram(NGram):
         self.counters = [Counter() for _ in range(n+1)]
 
         for sent in train_sents:
-            if lower:
-                sent = [word.lower() for word in sent]
-
             for i in range(n+1):
                 self.counters[i].update(self.ngrams(i, sent))
 
@@ -188,18 +180,18 @@ class InterpolatedNGram(NGram):
         self._addone = addone
         if addone:
             self._voc = set( [ngram[-1] for ngram in self.counters[-1].keys()] )
+            self._voc.discard('<s>')
             self._V = len(self._voc)  # vocabulary size
 
         # compute gamma if not given
-        if gamma is not None:
+        if gamma:
             self._gamma = gamma
         else:
             print('Computing gamma...')
             # use grid search to choose gamma
             min_gamma, min_p = None, float('inf')
 
-            # WORK HERE!! TRY DIFFERENT VALUES BY HAND:
-            for gamma in [100 + i * 50 for i in range(10)]:
+            for gamma in [1, 10, 100, 1000, 10000]:
                 self._gamma = gamma
                 p = self.perplexity(held_out_sents)
                 print('  {} -> {}'.format(gamma, p))
@@ -217,26 +209,22 @@ class InterpolatedNGram(NGram):
         """
         return self.counters[len(ngram)][ngram]
 
-    def cond_prob_ngram(self, ngram):
+    def cond_prob_ngram_term(self, ngram):
         """Conditional probability of a token.
 
         tokens  -- tuple of tokens; i.e. (n-2, n-1, n)
         returns -- p(n | n-1, n-2) = count(n-2, n-1, n) / count(n-2, n-1)
         """
         prob = np.divide( self.count(ngram), self.count(ngram[:-1]) )
-        print('COND=',ngram,'/',ngram[:-1],'=',self.count(ngram),
-                '/',self.count(ngram[:-1]),'=', prob)
 
         return 0.0 if np.isnan(prob) else prob
 
     def gamma_term(self, ngram, gamma=0.0):
         prob = np.divide( self.count(ngram), self.count(ngram) + gamma)
-        print('GAMMA=',ngram,'/',ngram,'+',gamma,'=',self.count(ngram),
-                '/',self.count(ngram),'+',gamma,'=', prob)
 
         return 0.0 if np.isnan(prob) else prob
 
-    def add_one_cond_prob_ngram(self, ngram):
+    def add_one_cond_prob_ngram_term(self, ngram):
         """Conditional probability of a token.
 
         tokens  -- tuple of tokens; i.e. (n-2, n-1, n)
@@ -244,32 +232,26 @@ class InterpolatedNGram(NGram):
         """
         return np.divide( self.count(ngram) + 1, self.count(ngram[:-1]) + self._V )
 
-    def cond_prob(self, token, prev_tokens=tuple()):
+    def cond_prob_ngram(self, ngram):
         """Conditional probability of a token.
 
         token -- the token.
         prev_tokens -- the previous n-1 tokens (optional only if n = 1).
         """
         n = self._n
-        assert len(prev_tokens) == n - 1
 
-        tokens  = prev_tokens + (token,)
         probs   = []
         lambdas = []
 
         for i in range(n-1):
-            probs.append( self.cond_prob_ngram(tokens[i:]) )
-            lambdas.append( (1 - np.sum(lambdas)) * self.gamma_term(tokens[i:-1], self._gamma) )
+            probs.append( self.cond_prob_ngram_term(ngram[i:]) )
+            lambdas.append( (1 - np.sum(lambdas)) * self.gamma_term(ngram[i:-1], self._gamma) )
 
         if self._addone:
-            probs.append( self.add_one_cond_prob_ngram(tokens[n-1:]) )
+            probs.append( self.add_one_cond_prob_ngram_term(ngram[n-1:]) )
         else:
-            probs.append( self.cond_prob_ngram(tokens[n-1:]) )
+            probs.append( self.cond_prob_ngram_term(ngram[n-1:]) )
 
         lambdas.append(1 - np.sum(lambdas))
 
-        print('p=',probs)
-        print('l=',lambdas)
-        print('cond=',np.dot(lambdas,probs))
-        print('----')
         return np.dot(lambdas, probs)

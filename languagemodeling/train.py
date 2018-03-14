@@ -44,10 +44,11 @@ if __name__ == '__main__':
     # load the data
     corpus = PlaintextCorpusReader(CORPUS_DIR, '.*.txt', word_tokenizer=RegexpTokenizer(PATTERN))
 
+    corpus_sents = [[word.lower() for word in sent] for sent in corpus.sents()]
+
     # train the model
     n = int(opts['-n'])
-    # model = NGram(n, corpus.sents())
-    model = models[opts['-m']](n, corpus.sents())
+    model = models[opts['-m']](n, corpus_sents)
 
     # save it
     filename = opts['-o']
